@@ -1,13 +1,8 @@
 package com.example.chessinsight
 
-import android.content.Context
-import android.net.Uri
 import android.os.Bundle
-import android.provider.OpenableColumns
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.Canvas
@@ -42,7 +37,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -111,12 +105,11 @@ private fun ChessInsightApp() {
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var engineMessage by remember { mutableStateOf<String?>(null) }
     var engineBusy by remember { mutableStateOf(false) }
-    var importUri by remember { mutableStateOf<Uri?>(null) }
     var analysisProgress by remember { mutableStateOf<Pair<Int, Int>?>(null) }
     var notationEntry by remember { mutableStateOf("") }
     var positionEvaluation by remember { mutableStateOf<PositionEvaluation?>(null) }
     var analysisDepth by remember { mutableStateOf(20) }
-    var showNotationInput by remember { mutableStateOf(true) }
+    var showNotationInput by remember { mutableStateOf(false) }
     var autoAnalyzeImportedGames by remember { mutableStateOf(true) }
 
     suspend fun analyzeGame(targetSession: ChessSession) {
@@ -159,35 +152,6 @@ private fun ChessInsightApp() {
         onDispose { engine.close() }
     }
 
-    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) {
-        importUri = it
-    }
-    val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) {
-        importUri = it
-    }
-
-    LaunchedEffect(importUri) {
-        val uri = importUri ?: return@LaunchedEffect
-        try {
-            val name = displayName(context, uri)
-            val imported = GameImport.fromUri(context, uri, name)
-            session = imported
-            review = null
-            selectedOrigin = null
-            positionEvaluation = null
-            engineMessage = null
-            errorMessage = null
-            showNotationInput = false
-            if (autoAnalyzeImportedGames && imported.moves.isNotEmpty()) {
-                scope.launch { analyzeGame(imported) }
-            }
-        } catch (exception: Exception) {
-            errorMessage = exception.message ?: "Could not import that file."
-        } finally {
-            importUri = null
-        }
-    }
-
     val board = remember(session) { session.boardAt() }
     val legalMoves = remember(session, selectedOrigin) {
         selectedOrigin?.let(session::legalMovesFrom).orEmpty()
@@ -206,45 +170,12 @@ private fun ChessInsightApp() {
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             item {
-                Column(modifier = Modifier.padding(top = 24.dp)) {
-                    Text("CHESS INSIGHT", color = Accent, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                    Text("Review the game.", fontSize = 29.sp, fontWeight = FontWeight.Bold)
-                    Text(
-                        "Stockfish 19 analysis · play from any position",
-                        color = Muted,
-                        fontSize = 14.sp
-                    )
-                }
-            }
-
-            item {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(
-                        modifier = Modifier.weight(1f),
-                        enabled = !engineBusy && analysisProgress == null,
-                        onClick = { filePicker.launch(arrayOf("*/*")) }
-                    ) { Text("Import PGN / FEN") }
-                    OutlinedButton(
-                        modifier = Modifier.weight(1f),
-                        enabled = !engineBusy && analysisProgress == null,
-                        onClick = { imagePicker.launch(arrayOf("image/png")) }
-                    ) { Text("Import PNG") }
-                }
-                Text(
-                    "PNG import reads visible PGN/FEN text; board-only screenshots are not recognized yet.",
-                    color = Muted,
-                    fontSize = 12.sp,
-                    modifier = Modifier.padding(top = 4.dp)
-                )
-            }
-
-            item {
                 OutlinedButton(
                     modifier = Modifier.fillMaxWidth(),
                     enabled = !engineBusy && analysisProgress == null,
                     onClick = { showNotationInput = !showNotationInput }
                 ) {
-                    Text(if (showNotationInput) "Hide PGN / FEN input" else "Paste PGN / FEN")
+                    Text(if (showNotationInput) "Hide PGN / FEN input" else "Import PGN / FEN")
                 }
             }
 
@@ -254,7 +185,7 @@ private fun ChessInsightApp() {
                     onValueChange = { notationEntry = it },
                     modifier = Modifier.fillMaxWidth(),
                     enabled = !engineBusy && analysisProgress == null,
-                    label = { Text("Paste PGN (default) or FEN") },
+                    label = { Text("Paste PGN or FEN") },
                     minLines = 4,
                     maxLines = 8,
                     trailingIcon = {
@@ -270,6 +201,7 @@ private fun ChessInsightApp() {
                                     positionEvaluation = null
                                     errorMessage = null
                                     engineMessage = null
+                                    notationEntry = ""
                                     showNotationInput = false
                                     if (autoAnalyzeImportedGames && imported.moves.isNotEmpty()) {
                                         scope.launch { analyzeGame(imported) }
@@ -409,7 +341,7 @@ private fun ChessInsightApp() {
                     OutlinedButton(
                         modifier = Modifier.weight(1f),
                         enabled = !engineBusy && analysisProgress == null,
-                        onClick = { session = session.jumpTo(0); review = null; selectedOrigin = null }
+                        onClick = { session = session.jumpTo(0); selectedOrigin = null }
                     ) { Text("First") }
                     OutlinedButton(
                         modifier = Modifier.weight(1f),
@@ -962,15 +894,4 @@ private fun labelColor(label: MoveLabel): Color = when (label) {
     MoveLabel.INACCURACY -> Color(0xFF9A6900)
     MoveLabel.MISTAKE -> Color(0xFFC65D22)
     MoveLabel.BLUNDER -> Color(0xFFC53636)
-}
-
-private fun displayName(context: Context, uri: Uri): String {
-    context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
-        ?.use { cursor ->
-            if (cursor.moveToFirst()) {
-                val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                if (index >= 0) return cursor.getString(index)
-            }
-        }
-    return uri.lastPathSegment ?: "import"
 }
