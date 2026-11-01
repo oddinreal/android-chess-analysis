@@ -17,13 +17,16 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -201,23 +204,34 @@ private fun ChessInsightApp() {
 
     Surface(modifier = Modifier.fillMaxSize(), color = Background) {
         Column(
-            modifier = Modifier.fillMaxSize().padding(horizontal = 14.dp, vertical = 4.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
+            modifier = Modifier
+                .fillMaxSize()
+                .windowInsetsPadding(WindowInsets.safeDrawing)
+                .padding(horizontal = 6.dp, vertical = 6.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            OutlinedButton(
-                modifier = Modifier.fillMaxWidth(),
-                enabled = !engineBusy && analysisProgress == null,
-                onClick = { showNotationInput = !showNotationInput }
-            ) {
-                Text(if (showNotationInput) "Hide PGN / FEN input" else "Import PGN / FEN")
-            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    modifier = Modifier.weight(1.2f),
+                    enabled = !engineBusy && analysisProgress == null,
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
+                    onClick = { showNotationInput = !showNotationInput }
+                ) {
+                    Text(
+                        if (showNotationInput) "Hide PGN / FEN" else "Import PGN / FEN",
+                        maxLines = 1,
+                        fontSize = 12.sp
+                    )
+                }
 
-            OutlinedButton(
-                modifier = Modifier.fillMaxWidth(),
-                enabled = !engineBusy && analysisProgress == null,
-                onClick = { imagePicker.launch(arrayOf("image/png")) }
-            ) {
-                Text("Import PNG")
+                OutlinedButton(
+                    modifier = Modifier.weight(0.8f),
+                    enabled = !engineBusy && analysisProgress == null,
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
+                    onClick = { imagePicker.launch(arrayOf("image/png")) }
+                ) {
+                    Text("Import PNG", maxLines = 1, fontSize = 12.sp)
+                }
             }
 
             LazyColumn(
