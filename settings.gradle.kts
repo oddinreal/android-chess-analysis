@@ -15,5 +15,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "ChessInsight"
+rootProject.name = "android-chess-analysis"
 include(":app")
