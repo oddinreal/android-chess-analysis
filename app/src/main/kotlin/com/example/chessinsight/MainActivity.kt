@@ -1,8 +1,11 @@
 package com.example.chessinsight
 
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.Canvas
@@ -11,6 +14,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
@@ -37,6 +41,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -105,6 +110,7 @@ private fun ChessInsightApp() {
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var engineMessage by remember { mutableStateOf<String?>(null) }
     var engineBusy by remember { mutableStateOf(false) }
+    var importUri by remember { mutableStateOf<Uri?>(null) }
     var analysisProgress by remember { mutableStateOf<Pair<Int, Int>?>(null) }
     var notationEntry by remember { mutableStateOf("") }
     var positionEvaluation by remember { mutableStateOf<PositionEvaluation?>(null) }
@@ -148,8 +154,37 @@ private fun ChessInsightApp() {
         return updated
     }
 
+    fun loadGame(imported: ChessSession) {
+        session = imported
+        review = null
+        selectedOrigin = null
+        positionEvaluation = null
+        errorMessage = null
+        engineMessage = null
+        notationEntry = ""
+        showNotationInput = false
+        if (autoAnalyzeImportedGames && imported.moves.isNotEmpty()) {
+            scope.launch { analyzeGame(imported) }
+        }
+    }
+
     DisposableEffect(engine) {
         onDispose { engine.close() }
+    }
+
+    val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) {
+        importUri = it
+    }
+
+    LaunchedEffect(importUri) {
+        val uri = importUri ?: return@LaunchedEffect
+        try {
+            loadGame(GameImport.fromUri(context, uri, "import.png"))
+        } catch (exception: Exception) {
+            errorMessage = exception.message ?: "Could not import that PNG."
+        } finally {
+            importUri = null
+        }
     }
 
     val board = remember(session) { session.boardAt() }
@@ -165,20 +200,31 @@ private fun ChessInsightApp() {
     val selectedReviewMove = review?.moves?.getOrNull(session.ply - 1)
 
     Surface(modifier = Modifier.fillMaxSize(), color = Background) {
-        LazyColumn(
-            modifier = Modifier.fillMaxSize().padding(horizontal = 18.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
+        Column(
+            modifier = Modifier.fillMaxSize().padding(horizontal = 14.dp, vertical = 4.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
-            item {
-                OutlinedButton(
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = !engineBusy && analysisProgress == null,
-                    onClick = { showNotationInput = !showNotationInput }
-                ) {
-                    Text(if (showNotationInput) "Hide PGN / FEN input" else "Import PGN / FEN")
-                }
+            OutlinedButton(
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !engineBusy && analysisProgress == null,
+                onClick = { showNotationInput = !showNotationInput }
+            ) {
+                Text(if (showNotationInput) "Hide PGN / FEN input" else "Import PGN / FEN")
             }
 
+            OutlinedButton(
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !engineBusy && analysisProgress == null,
+                onClick = { imagePicker.launch(arrayOf("image/png")) }
+            ) {
+                Text("Import PNG")
+            }
+
+            LazyColumn(
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                contentPadding = PaddingValues(vertical = 6.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
             if (showNotationInput) item {
                 OutlinedTextField(
                     value = notationEntry,
@@ -186,8 +232,8 @@ private fun ChessInsightApp() {
                     modifier = Modifier.fillMaxWidth(),
                     enabled = !engineBusy && analysisProgress == null,
                     label = { Text("Paste PGN or FEN") },
-                    minLines = 4,
-                    maxLines = 8,
+                    minLines = 2,
+                    maxLines = 4,
                     trailingIcon = {
                         Text(
                             "LOAD",
@@ -195,17 +241,7 @@ private fun ChessInsightApp() {
                             modifier = Modifier.clickable(enabled = !engineBusy && analysisProgress == null) {
                                 try {
                                     val imported = GameImport.fromText("input.pgn", notationEntry)
-                                    session = imported
-                                    review = null
-                                    selectedOrigin = null
-                                    positionEvaluation = null
-                                    errorMessage = null
-                                    engineMessage = null
-                                    notationEntry = ""
-                                    showNotationInput = false
-                                    if (autoAnalyzeImportedGames && imported.moves.isNotEmpty()) {
-                                        scope.launch { analyzeGame(imported) }
-                                    }
+                                    loadGame(imported)
                                 } catch (exception: Exception) {
                                     errorMessage = exception.message ?: "Could not read PGN or FEN."
                                 }
@@ -334,31 +370,6 @@ private fun ChessInsightApp() {
                         }
                     }
                 ) { Text("Analyze position") }
-            }
-
-            item {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(
-                        modifier = Modifier.weight(1f),
-                        enabled = !engineBusy && analysisProgress == null,
-                        onClick = { session = session.jumpTo(0); selectedOrigin = null }
-                    ) { Text("First") }
-                    OutlinedButton(
-                        modifier = Modifier.weight(1f),
-                        enabled = !engineBusy && analysisProgress == null,
-                        onClick = { session = session.jumpTo(session.ply - 1); selectedOrigin = null }
-                    ) { Text("‹ Back") }
-                    OutlinedButton(
-                        modifier = Modifier.weight(1f),
-                        enabled = !engineBusy && analysisProgress == null,
-                        onClick = { session = session.jumpTo(session.ply + 1); selectedOrigin = null }
-                    ) { Text("Forward ›") }
-                    OutlinedButton(
-                        modifier = Modifier.weight(1f),
-                        enabled = !engineBusy && analysisProgress == null,
-                        onClick = { session = session.jumpTo(session.moves.size); selectedOrigin = null }
-                    ) { Text("Latest") }
-                }
             }
 
             if (session.moves.isNotEmpty()) {
@@ -564,6 +575,36 @@ private fun ChessInsightApp() {
                 }
             }
             item { Spacer(Modifier.height(20.dp)) }
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Panel, RoundedCornerShape(16.dp))
+                    .padding(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                OutlinedButton(
+                    modifier = Modifier.weight(1f),
+                    enabled = !engineBusy && analysisProgress == null,
+                    onClick = { session = session.jumpTo(0); selectedOrigin = null }
+                ) { Text("First", maxLines = 1) }
+                OutlinedButton(
+                    modifier = Modifier.weight(1f),
+                    enabled = !engineBusy && analysisProgress == null,
+                    onClick = { session = session.jumpTo(session.ply - 1); selectedOrigin = null }
+                ) { Text("‹ Back", maxLines = 1) }
+                OutlinedButton(
+                    modifier = Modifier.weight(1f),
+                    enabled = !engineBusy && analysisProgress == null,
+                    onClick = { session = session.jumpTo(session.ply + 1); selectedOrigin = null }
+                ) { Text("Next ›", maxLines = 1) }
+                OutlinedButton(
+                    modifier = Modifier.weight(1f),
+                    enabled = !engineBusy && analysisProgress == null,
+                    onClick = { session = session.jumpTo(session.moves.size); selectedOrigin = null }
+                ) { Text("Last", maxLines = 1) }
+            }
         }
     }
 }
