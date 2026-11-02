@@ -52,4 +52,24 @@ class GameImportTest {
         assertEquals(fen, session.startFen)
         assertEquals(0, session.moves.size)
     }
+
+    @Test
+    fun fenScannerHandlesShortOcrTextAndFindsPositionsAcrossWhitespace() {
+        assertEquals(null, GameImport.findFen("one two three"))
+        assertEquals(
+            "4k3/8/8/8/8/8/8/4K3 w - - 0 1",
+            GameImport.findFen("Position:\n4k3/8/8/8/8/8/8/4K3 w - - 0 1")
+        )
+    }
+
+    @Test
+    fun malformedPastedFenReportsFenValidationInsteadOfPgnFailure() {
+        try {
+            GameImport.fromText("input.pgn", "4k3/8/8 w - - 0")
+        } catch (exception: IllegalArgumentException) {
+            assertEquals("A FEN position must contain six fields.", exception.message)
+            return
+        }
+        throw AssertionError("Malformed FEN should be rejected.")
+    }
 }

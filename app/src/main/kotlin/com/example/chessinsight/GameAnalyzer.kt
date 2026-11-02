@@ -1,6 +1,7 @@
 package com.example.chessinsight
 
 import com.github.bhlangonijr.chesslib.Side
+import com.github.bhlangonijr.chesslib.move.Move
 
 enum class MoveLabel(val title: String) {
     BRILLIANT("Brilliant"),
@@ -14,12 +15,22 @@ enum class MoveLabel(val title: String) {
 
 data class MoveReview(
     val ply: Int,
+    val mover: Side,
     val move: String,
     val playedMove: String,
     val label: MoveLabel,
     val centipawnLoss: Int,
     val bestMove: String,
+    val bestLine: List<String>,
     val evaluationAfterWhite: Int
+)
+
+data class PlayerMoveSummary(
+    val moveCount: Int,
+    val brilliantMoves: Int,
+    val bestMoves: Int,
+    val excellentMoves: Int,
+    val blunders: Int
 )
 
 data class GameReview(
@@ -28,7 +39,18 @@ data class GameReview(
     val whiteEstimatedElo: Int?,
     val blackEstimatedElo: Int?,
     val depth: Int
-)
+) {
+    fun summaryFor(side: Side): PlayerMoveSummary {
+        val playerMoves = moves.filter { it.mover == side }
+        return PlayerMoveSummary(
+            moveCount = playerMoves.size,
+            brilliantMoves = playerMoves.count { it.label == MoveLabel.BRILLIANT },
+            bestMoves = playerMoves.count { it.label == MoveLabel.BEST },
+            excellentMoves = playerMoves.count { it.label == MoveLabel.EXCELLENT },
+            blunders = playerMoves.count { it.label == MoveLabel.BLUNDER }
+        )
+    }
+}
 
 class GameAnalyzer(private val engine: StockfishEngine) {
     suspend fun analyze(
@@ -37,22 +59,19 @@ class GameAnalyzer(private val engine: StockfishEngine) {
         onProgress: suspend (completed: Int, total: Int) -> Unit
     ): GameReview {
         val reviews = mutableListOf<MoveReview>()
-        var before = engine.analyze(session.fenAt(0), depth)
+        val board = session.boardAt(0)
+        var before = engine.analyze(board.fen, depth)
         val evaluationsWhite = mutableListOf(
-            whitePerspective(before.scoreCp, session.boardAt(0).sideToMove)
+            whitePerspective(before.scoreCp, board.sideToMove)
         )
         session.moves.forEachIndexed { index, played ->
-            val afterFen = session.fenAt(index + 1)
-            val after = engine.analyze(afterFen, depth)
-            val afterSideToMove = session.boardAt(index + 1).sideToMove
-            val evaluationAfterWhite = whitePerspective(after.scoreCp, afterSideToMove)
+            val mover = board.sideToMove
+            val move = Move(played, mover)
+            check(board.doMove(move, true)) { "Illegal move in imported game: $played" }
+            val after = engine.analyze(board.fen, depth)
+            val evaluationAfterWhite = whitePerspective(after.scoreCp, board.sideToMove)
             evaluationsWhite += evaluationAfterWhite
             val loss = (before.scoreCp + after.scoreCp).coerceAtLeast(0)
-            val mover = if (session.boardAt(index).sideToMove == Side.WHITE) {
-                BoardSide.WHITE
-            } else {
-                BoardSide.BLACK
-            }
             val afterForMover = -after.scoreCp
             val improvement = afterForMover - before.scoreCp
             val label = classify(
@@ -63,11 +82,13 @@ class GameAnalyzer(private val engine: StockfishEngine) {
             )
             reviews += MoveReview(
                 ply = index + 1,
-                move = if (mover == BoardSide.WHITE) "${index / 2 + 1}." else "${index / 2 + 1}...",
+                mover = mover,
+                move = session.moveNotationAt(index),
                 playedMove = played,
                 label = label,
                 centipawnLoss = loss,
                 bestMove = before.bestMove,
+                bestLine = before.principalVariation,
                 evaluationAfterWhite = evaluationAfterWhite
             )
             onProgress(index + 1, session.moves.size)
@@ -78,10 +99,10 @@ class GameAnalyzer(private val engine: StockfishEngine) {
             moves = reviews,
             evaluationsWhite = evaluationsWhite,
             whiteEstimatedElo = EloEstimator.estimate(
-                reviews.filter { it.ply % 2 == 1 }.map(MoveReview::centipawnLoss)
+                reviews.filter { it.mover == Side.WHITE }.map(MoveReview::centipawnLoss)
             ),
             blackEstimatedElo = EloEstimator.estimate(
-                reviews.filter { it.ply % 2 == 0 }.map(MoveReview::centipawnLoss)
+                reviews.filter { it.mover == Side.BLACK }.map(MoveReview::centipawnLoss)
             ),
             depth = depth
         )
@@ -100,6 +121,4 @@ class GameAnalyzer(private val engine: StockfishEngine) {
             loss <= 250 -> MoveLabel.MISTAKE
             else -> MoveLabel.BLUNDER
         }
-
-    private enum class BoardSide { WHITE, BLACK }
 }

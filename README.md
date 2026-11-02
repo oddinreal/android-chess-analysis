@@ -10,15 +10,20 @@ This app is vibe-coded and experimental. It is provided “as is,” without war
 
 ## Features
 
-- Import PGN games and FEN positions, paste PGN moves or FEN notation, browse moves, and play from any selected position.
+- Import PGN/FEN files, paste PGN moves or FEN notation, browse moves, and play from any selected position. PNG OCR can recognize visible notation.
+- Read move history and engine continuations in standard chess notation (SAN), with screen-reader labels for board squares and legal moves.
+- Copy an analyzed or edited game as standard PGN, including player names and custom starting FEN metadata.
 - Play moves directly on the board; deviating from an imported game automatically branches and analyzes the new line.
 - Evaluate a position with Stockfish and see the advantage for White or Black on the evaluation bar.
 - Play Stockfish's next move from the current position.
-- Analyze imported PGN games automatically with Stockfish 19 and show move-quality labels, played/best-move arrows, the evaluation after each move, and rough Elo estimates.
+- Analyze imported PGN games automatically with Stockfish 19 and show move-quality labels in separate White and Black columns, player-specific Best/Excellent/Brilliant/Blunder counts, played/best-move arrows, the engine continuation and evaluation after each move, and rough Elo estimates.
 - Toggle automatic analysis on import or manually analyze/reanalyze a game at any time.
 - Choose game-analysis depth from 12, 16, 20, or 25; the default is 12.
 - Flip the board to view the position from White's or Black's perspective.
 - Animate played moves and view clearer, outlined analysis arrows.
+- Choose a promotion piece, copy the current position as FEN, and use the move history with correct numbering for custom FEN starts.
+- See check, checkmate, stalemate, and draw status; selected pieces show legal captures (including en passant), and the previous move is highlighted.
+- Analysis depth, auto-analysis, and board orientation are remembered between app launches.
 - View high-contrast chess pieces and, after game analysis, the move label and side-to-move advantage directly on the board.
 - Import PNG images to OCR visible PGN/FEN notation. Board-only images are not yet converted into positions.
 

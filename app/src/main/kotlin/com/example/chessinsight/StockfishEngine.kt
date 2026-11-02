@@ -21,44 +21,61 @@ class StockfishEngine(private val context: Context) : AutoCloseable {
     private var input: BufferedWriter? = null
     private var output: BufferedReader? = null
 
-    suspend fun analyze(fen: String, depth: Int): EngineResult = withContext(Dispatchers.IO) {
-        synchronized(lock) {
-            ensureStarted()
-            send("position fen $fen")
-            send("go depth $depth")
-            var scoreCp = 0
-            var mateIn: Int? = null
-            var pv = emptyList<String>()
-            while (true) {
-                val line = output?.readLine() ?: error("Stockfish stopped while analyzing.")
-                if (line.startsWith("info ")) {
-                    val words = line.split(' ')
-                    val scoreIndex = words.indexOf("score")
-                    if (scoreIndex >= 0 && scoreIndex + 2 < words.size) {
-                        when (words[scoreIndex + 1]) {
-                            "cp" -> {
-                                scoreCp = words[scoreIndex + 2].toIntOrNull() ?: scoreCp
-                                mateIn = null
-                            }
-                            "mate" -> {
-                                mateIn = words[scoreIndex + 2].toIntOrNull()
-                                scoreCp = mateIn?.let { if (it > 0) 10_000 - it else -10_000 - it } ?: scoreCp
+    suspend fun analyze(fen: String, depth: Int): EngineResult {
+        require(depth in 1..64) { "Analysis depth must be between 1 and 64." }
+        require(fen.isNotBlank() && '\n' !in fen && '\r' !in fen) {
+            "The engine requires a single-line FEN position."
+        }
+        require(fen.trim().split(Regex("\\s+")).size == 6) {
+            "The engine requires a six-field FEN position."
+        }
+
+        return withContext(Dispatchers.IO) {
+            synchronized(lock) {
+                ensureStarted()
+                send("position fen $fen")
+                send("go depth $depth")
+                var scoreCp: Int? = null
+                var mateIn: Int? = null
+                var pv = emptyList<String>()
+                while (true) {
+                    val line = output?.readLine() ?: error("Stockfish stopped while analyzing.")
+                    if (line.startsWith("info ")) {
+                        val words = line.split(' ')
+                        val scoreIndex = words.indexOf("score")
+                        if (scoreIndex >= 0 && scoreIndex + 2 < words.size) {
+                            when (words[scoreIndex + 1]) {
+                                "cp" -> {
+                                    scoreCp = words[scoreIndex + 2].toIntOrNull()
+                                        ?: error("Stockfish returned an invalid centipawn score.")
+                                    mateIn = null
+                                }
+                                "mate" -> {
+                                    val parsedMate = words[scoreIndex + 2].toIntOrNull()
+                                        ?: error("Stockfish returned an invalid mate score.")
+                                    mateIn = parsedMate
+                                    scoreCp = if (parsedMate > 0) {
+                                        10_000 - parsedMate
+                                    } else {
+                                        -10_000 - parsedMate
+                                    }
+                                }
                             }
                         }
+                        val pvIndex = words.indexOf("pv")
+                        if (pvIndex >= 0) pv = words.drop(pvIndex + 1)
+                    } else if (line.startsWith("bestmove ")) {
+                        val bestMove = line.split(' ').getOrNull(1).orEmpty()
+                        return@synchronized EngineResult(
+                            bestMove = bestMove,
+                            scoreCp = scoreCp ?: error("Stockfish returned no evaluation score."),
+                            mateIn = mateIn,
+                            principalVariation = pv
+                        )
                     }
-                    val pvIndex = words.indexOf("pv")
-                    if (pvIndex >= 0) pv = words.drop(pvIndex + 1)
-                } else if (line.startsWith("bestmove ")) {
-                    val bestMove = line.split(' ').getOrNull(1).orEmpty()
-                    return@synchronized EngineResult(
-                        bestMove = bestMove,
-                        scoreCp = scoreCp,
-                        mateIn = mateIn,
-                        principalVariation = pv
-                    )
                 }
+                error("Stockfish did not return a best move.")
             }
-            error("Stockfish did not return a best move.")
         }
     }
 

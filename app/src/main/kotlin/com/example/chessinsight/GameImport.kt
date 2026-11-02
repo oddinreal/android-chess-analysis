@@ -31,6 +31,10 @@ object GameImport {
             return ChessSession(startFen = board.fen)
         }
 
+        if (text.split(Regex("\\s+"), limit = 2).firstOrNull().orEmpty().contains('/')) {
+            return ChessSession(startFen = parseFen(text).fen)
+        }
+
         parseFenOrNull(text)?.let { board ->
             return ChessSession(startFen = board.fen)
         }
@@ -79,8 +83,9 @@ object GameImport {
         return fromText("image.pgn", pgn)
     }
 
-    private fun findFen(text: String): String? {
-        val tokens = text.replace('\n', ' ').split(Regex("\\s+"))
+    internal fun findFen(text: String): String? {
+        val tokens = text.split(Regex("\\s+")).filter(String::isNotBlank)
+        if (tokens.size < 6) return null
         for (start in 0..(tokens.size - 6)) {
             val candidate = tokens.subList(start, start + 6).joinToString(" ")
             parseFenOrNull(candidate)?.let { return it.fen }

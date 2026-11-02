@@ -2,6 +2,8 @@ package com.example.chessinsight
 
 import android.net.Uri
 import android.os.Bundle
+import android.provider.OpenableColumns
+import android.content.Context
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -38,6 +40,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
@@ -46,6 +49,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -53,6 +57,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -66,12 +71,18 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.github.bhlangonijr.chesslib.Piece
 import com.github.bhlangonijr.chesslib.Side
 import com.github.bhlangonijr.chesslib.Square
+import java.util.Locale
 import kotlinx.coroutines.launch
 
 private val Ink = Color(0xFF202B3C)
@@ -119,27 +130,49 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun ChessInsightApp() {
     val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
     val scope = rememberCoroutineScope()
     val engine = remember { StockfishEngine(context.applicationContext) }
+    val preferences = remember(context) {
+        context.getSharedPreferences("chess_insight_preferences", Context.MODE_PRIVATE)
+    }
     var session by remember { mutableStateOf(ChessSession()) }
-    var boardSide by remember { mutableStateOf(Side.WHITE) }
+    var boardSide by rememberSaveable {
+        mutableStateOf(
+            if (preferences.getBoolean("black_perspective", false)) Side.BLACK else Side.WHITE
+        )
+    }
     var selectedOrigin by remember { mutableStateOf<String?>(null) }
     var review by remember { mutableStateOf<GameReview?>(null) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var engineMessage by remember { mutableStateOf<String?>(null) }
     var engineBusy by remember { mutableStateOf(false) }
-    var importUri by remember { mutableStateOf<Uri?>(null) }
+    var importSelection by remember { mutableStateOf<Pair<Uri, String?>?>(null) }
     var analysisProgress by remember { mutableStateOf<Pair<Int, Int>?>(null) }
     var notationEntry by remember { mutableStateOf("") }
     var positionEvaluation by remember { mutableStateOf<PositionEvaluation?>(null) }
-    var analysisDepth by remember { mutableStateOf(12) }
+    var analysisDepth by rememberSaveable {
+        mutableStateOf(preferences.getInt("analysis_depth", 12).takeIf { it in listOf(12, 16, 20, 25) } ?: 12)
+    }
     var showNotationInput by remember { mutableStateOf(false) }
-    var autoAnalyzeImportedGames by remember { mutableStateOf(true) }
+    var autoAnalyzeImportedGames by rememberSaveable {
+        mutableStateOf(preferences.getBoolean("auto_analyze", true))
+    }
+    var promotionMoves by remember { mutableStateOf<List<String>>(emptyList()) }
+
+    LaunchedEffect(analysisDepth) {
+        preferences.edit().putInt("analysis_depth", analysisDepth).apply()
+    }
+    LaunchedEffect(autoAnalyzeImportedGames) {
+        preferences.edit().putBoolean("auto_analyze", autoAnalyzeImportedGames).apply()
+    }
+    LaunchedEffect(boardSide) {
+        preferences.edit().putBoolean("black_perspective", boardSide == Side.BLACK).apply()
+    }
 
     suspend fun analyzeGame(targetSession: ChessSession) {
         engineBusy = true
         analysisProgress = 0 to targetSession.moves.size
-        review = null
         errorMessage = null
         engineMessage = "Analyzing game at depth $analysisDepth…"
         try {
@@ -163,6 +196,7 @@ private fun ChessInsightApp() {
         val updated = current.play(uci)
         session = updated
         selectedOrigin = null
+        promotionMoves = emptyList()
         positionEvaluation = null
         errorMessage = null
         engineMessage = null
@@ -176,6 +210,7 @@ private fun ChessInsightApp() {
         session = imported
         review = null
         selectedOrigin = null
+        promotionMoves = emptyList()
         positionEvaluation = null
         errorMessage = null
         engineMessage = null
@@ -191,21 +226,37 @@ private fun ChessInsightApp() {
     }
 
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) {
-        importUri = it
+        importSelection = it?.let { uri -> uri to "import.png" }
     }
 
-    LaunchedEffect(importUri) {
-        val uri = importUri ?: return@LaunchedEffect
+    val notationFilePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) {
+        importSelection = it?.let { uri -> uri to null }
+    }
+
+    LaunchedEffect(importSelection) {
+        val (uri, selectedName) = importSelection ?: return@LaunchedEffect
         try {
-            loadGame(GameImport.fromUri(context, uri, "import.png"))
+            val displayName = selectedName
+                ?: contentDisplayName(context, uri).orEmpty().ifBlank { "import.pgn" }
+            loadGame(GameImport.fromUri(context, uri, displayName))
         } catch (exception: Exception) {
-            errorMessage = exception.message ?: "Could not import that PNG."
+            errorMessage = exception.message ?: "Could not import that file."
         } finally {
-            importUri = null
+            importSelection = null
         }
     }
 
     val board = remember(session) { session.boardAt() }
+    val hasLegalMoves = remember(board) { board.legalMoves().isNotEmpty() }
+    val positionStatus = remember(session) { session.positionStatus() }
+    val captureTargets = remember(session, selectedOrigin) {
+        selectedOrigin?.let(session::captureTargetsFrom).orEmpty()
+    }
+    val lastMoveSquares = remember(session) {
+        session.moves.getOrNull(session.ply - 1)?.let { move ->
+            setOf(move.substring(0, 2), move.substring(2, 4))
+        }.orEmpty()
+    }
     val legalMoves = remember(session, selectedOrigin) {
         selectedOrigin?.let(session::legalMovesFrom).orEmpty()
     }
@@ -216,6 +267,13 @@ private fun ChessInsightApp() {
             PositionEvaluation(positionFen, it, null)
         }
     val selectedReviewMove = review?.moves?.getOrNull(session.ply - 1)
+    val sanMoves = remember(session) { session.sanMoves() }
+    val selectedBestSan = selectedReviewMove?.let { move ->
+        remember(session, move) { session.sanForMoveAt(move.ply - 1, move.bestMove) }
+    }
+    val selectedBestLineSan = selectedReviewMove?.let { move ->
+        remember(session, move) { session.sanLineAt(move.ply - 1, move.bestLine) }
+    }
 
     Surface(modifier = Modifier.fillMaxSize(), color = Background) {
         Column(
@@ -225,28 +283,68 @@ private fun ChessInsightApp() {
                 .padding(horizontal = 6.dp, vertical = 6.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 OutlinedButton(
-                    modifier = Modifier.weight(1.2f),
+                    modifier = Modifier.weight(1f),
                     enabled = !engineBusy && analysisProgress == null,
-                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
+                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp),
+                    onClick = { notationFilePicker.launch(arrayOf("*/*")) }
+                ) {
+                    Text("Open file", maxLines = 1, fontSize = 11.sp)
+                }
+
+                OutlinedButton(
+                    modifier = Modifier.weight(1f),
+                    enabled = !engineBusy && analysisProgress == null,
+                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp),
                     onClick = { showNotationInput = !showNotationInput }
                 ) {
                     Text(
-                        if (showNotationInput) "Hide PGN / FEN" else "Import PGN / FEN",
+                        if (showNotationInput) "Hide paste" else "Paste PGN / FEN",
                         maxLines = 1,
-                        fontSize = 12.sp
+                        fontSize = 11.sp
                     )
                 }
 
                 OutlinedButton(
-                    modifier = Modifier.weight(0.8f),
+                    modifier = Modifier.weight(0.85f),
                     enabled = !engineBusy && analysisProgress == null,
-                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
+                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp),
                     onClick = { imagePicker.launch(arrayOf("image/png")) }
                 ) {
-                    Text("Import PNG", maxLines = 1, fontSize = 12.sp)
+                    Text("Scan image", maxLines = 1, fontSize = 11.sp)
                 }
+            }
+
+            errorMessage?.let { message ->
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFFFFEFED)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(start = 12.dp, end = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            message,
+                            modifier = Modifier.weight(1f),
+                            color = Color(0xFFB42318),
+                            fontSize = 13.sp
+                        )
+                        TextButton(onClick = { errorMessage = null }) { Text("Dismiss") }
+                    }
+                }
+            }
+
+            engineMessage?.let { message ->
+                Text(
+                    message,
+                    modifier = Modifier.fillMaxWidth(),
+                    color = Accent,
+                    fontSize = 12.sp,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
 
             LazyColumn(
@@ -261,21 +359,23 @@ private fun ChessInsightApp() {
                     modifier = Modifier.fillMaxWidth(),
                     enabled = !engineBusy && analysisProgress == null,
                     label = { Text("Paste PGN or FEN") },
+                    supportingText = { Text("Paste game notation or a six-field FEN position.") },
                     minLines = 2,
                     maxLines = 4,
                     trailingIcon = {
-                        Text(
-                            "LOAD",
-                            color = Accent,
-                            modifier = Modifier.clickable(enabled = !engineBusy && analysisProgress == null) {
+                        TextButton(
+                            enabled = !engineBusy && analysisProgress == null,
+                            onClick = {
                                 try {
                                     val imported = GameImport.fromText("input.pgn", notationEntry)
                                     loadGame(imported)
                                 } catch (exception: Exception) {
                                     errorMessage = exception.message ?: "Could not read PGN or FEN."
                                 }
-                            }.padding(horizontal = 12.dp)
-                        )
+                            }
+                        ) {
+                            Text("Load")
+                        }
                     }
                 )
             }
@@ -298,15 +398,22 @@ private fun ChessInsightApp() {
                             verticalArrangement = Arrangement.spacedBy(3.dp)
                         ) {
                             Text(
-                                "${moveReview.move} ${moveReview.playedMove} · ${moveReview.label.title}",
+                                "${moveReview.move} ${sanMoves.getOrNull(moveReview.ply - 1) ?: moveReview.playedMove} · ${moveReview.label.title}",
                                 color = labelColor(moveReview.label),
                                 fontWeight = FontWeight.Bold
                             )
                             Text(
-                                "Best ${moveReview.bestMove} · ${evaluationSummary(moveReview.evaluationAfterWhite)}",
+                                "Best ${selectedBestSan ?: moveReview.bestMove} · ${evaluationSummary(moveReview.evaluationAfterWhite)}",
                                 color = Ink,
                                 fontSize = 12.sp
                             )
+                            if (moveReview.bestLine.isNotEmpty()) {
+                                Text(
+                                    "Engine line: ${selectedBestLineSan.orEmpty().take(6).joinToString(" ")}",
+                                    color = Muted,
+                                    fontSize = 11.sp
+                                )
+                            }
                             Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                                 Text("Played move", color = PlayedMoveColor, fontSize = 11.sp)
                                 Text("Best move", color = BestMoveColor, fontSize = 11.sp)
@@ -338,21 +445,27 @@ private fun ChessInsightApp() {
                     boardSide = boardSide,
                     selectedOrigin = selectedOrigin,
                     legalTargets = legalTargets,
+                    captureTargets = captureTargets,
+                    lastMoveSquares = lastMoveSquares,
                     reviewMove = selectedReviewMove,
                     enabled = !engineBusy && analysisProgress == null,
                     onSquareTap = { square ->
                         val selected = selectedOrigin
-                        val move = legalMoves.firstOrNull { it.substring(2, 4) == square }
-                        if (selected != null && move != null) {
-                            try {
-                                val variation = playMove(move)
-                                if (variation != null) {
-                                    scope.launch { analyzeGame(variation) }
+                        val destinationMoves = legalMoves.filter { it.substring(2, 4) == square }
+                        if (selected != null && destinationMoves.isNotEmpty()) {
+                            if (destinationMoves.size > 1) {
+                                promotionMoves = destinationMoves
+                            } else {
+                                try {
+                                    val variation = playMove(destinationMoves.single())
+                                    if (variation != null) {
+                                        scope.launch { analyzeGame(variation) }
+                                    }
+                                } catch (exception: Exception) {
+                                    errorMessage = exception.message
                                 }
-                            } catch (exception: Exception) {
-                                errorMessage = exception.message
+                                selectedOrigin = null
                             }
-                            selectedOrigin = null
                         } else {
                             val piece = session.pieceAt(square)
                             if (piece != Piece.NONE && piece.pieceSide == board.sideToMove) {
@@ -369,16 +482,33 @@ private fun ChessInsightApp() {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Text("${session.whiteName}  ·  ${session.blackName}", fontWeight = FontWeight.SemiBold)
-                    Text(if (board.sideToMove == Side.WHITE) "White to move" else "Black to move", color = Muted)
+                    Text(
+                        "${session.whiteName}  ·  ${session.blackName}",
+                        modifier = Modifier.weight(1f),
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        when (positionStatus) {
+                            PositionStatus.CHECKMATE -> "Checkmate"
+                            PositionStatus.STALEMATE -> "Stalemate · draw"
+                            PositionStatus.DRAW -> "Draw"
+                            PositionStatus.CHECK -> "${if (board.sideToMove == Side.WHITE) "White" else "Black"} in check"
+                            PositionStatus.ACTIVE -> if (board.sideToMove == Side.WHITE) "White to move" else "Black to move"
+                        },
+                        color = Muted,
+                        maxLines = 1,
+                        fontSize = 12.sp
+                    )
                 }
             }
 
             item {
                 Text(
-                    if (engineBusy) "Analyzing… you can move again when the analysis finishes."
+                    if (engineBusy) "Analyzing… controls are paused until the engine finishes."
                     else "Tap a piece, then a highlighted square to play. Alternate moves are analyzed automatically.",
                     color = Muted,
                     fontSize = 12.sp,
@@ -389,9 +519,24 @@ private fun ChessInsightApp() {
                 )
             }
 
+            if (session.moves.isEmpty() && session.startFen == ChessSession.STARTING_FEN) {
+                item {
+                    Text(
+                        "Ready to study? Open a PGN file or paste a game to see its move history and analysis.",
+                        color = Muted,
+                        fontSize = 12.sp,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(Panel, RoundedCornerShape(12.dp))
+                            .padding(horizontal = 12.dp, vertical = 10.dp)
+                    )
+                }
+            }
+
             item {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.weight(1f),
                     enabled = !engineBusy && analysisProgress == null,
                     onClick = {
                         scope.launch {
@@ -415,7 +560,33 @@ private fun ChessInsightApp() {
                             }
                         }
                     }
-                ) { Text("Analyze position") }
+                ) { Text("Analyze position", maxLines = 1) }
+                OutlinedButton(
+                    modifier = Modifier.weight(1f),
+                    enabled = !engineBusy && analysisProgress == null,
+                    onClick = {
+                        clipboard.setText(AnnotatedString(positionFen))
+                        engineMessage = "Current position FEN copied."
+                        errorMessage = null
+                    }
+                ) { Text("Copy FEN", maxLines = 1) }
+                }
+            }
+
+            item {
+                OutlinedButton(
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = session.moves.isNotEmpty() && !engineBusy && analysisProgress == null,
+                    onClick = {
+                        try {
+                            clipboard.setText(AnnotatedString(session.toPgn()))
+                            engineMessage = "Game copied as PGN."
+                            errorMessage = null
+                        } catch (exception: Exception) {
+                            errorMessage = exception.message ?: "Could not export this game as PGN."
+                        }
+                    }
+                ) { Text("Copy game as PGN") }
             }
 
             if (session.moves.isNotEmpty()) {
@@ -433,7 +604,7 @@ private fun ChessInsightApp() {
                         session.moves.forEachIndexed { index, move ->
                             val active = session.ply == index + 1
                             Text(
-                                text = "${index / 2 + 1}${if (index % 2 == 0) "." else "..."} $move",
+                                text = "${session.moveNotationAt(index)} ${sanMoves.getOrNull(index) ?: move}",
                                 color = if (active) Color.White else Ink,
                                 modifier = Modifier
                                     .background(if (active) Accent else Panel, RoundedCornerShape(8.dp))
@@ -521,7 +692,7 @@ private fun ChessInsightApp() {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
                         modifier = Modifier.weight(1f),
-                        enabled = !engineBusy && analysisProgress == null,
+                        enabled = hasLegalMoves && !engineBusy && analysisProgress == null,
                         onClick = {
                             scope.launch {
                                 engineBusy = true
@@ -532,8 +703,7 @@ private fun ChessInsightApp() {
                                     val result = engine.analyze(session.fenAt(), analysisDepth)
                                     if (result.bestMove.isNotBlank() && result.bestMove != "(none)") {
                                         val evaluation = result.mateIn?.let { "M$it" } ?: run {
-                                            val pawns = result.scoreCp / 100.0
-                                            "${if (pawns > 0) "+" else ""}${"%.2f".format(pawns)}"
+                                            "${if (result.scoreCp > 0) "+" else ""}${formatPawns(result.scoreCp)}"
                                         }
                                         val pv = result.principalVariation.take(5).joinToString(" ")
                                         variationToAnalyze = playMove(result.bestMove)
@@ -555,19 +725,6 @@ private fun ChessInsightApp() {
                 }
             }
 
-            engineMessage?.let { message ->
-                item { Text(message, color = Accent) }
-            }
-            errorMessage?.let { message ->
-                item {
-                    Text(
-                        message,
-                        color = Color(0xFFB42318),
-                        modifier = Modifier.background(Panel, RoundedCornerShape(10.dp)).padding(12.dp)
-                    )
-                }
-            }
-
             analysisProgress?.let { (done, total) ->
                 item {
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -583,44 +740,86 @@ private fun ChessInsightApp() {
             review?.let { gameReview ->
                 item { ReviewSummary(gameReview, session.whiteName, session.blackName) }
                 item {
-                    Text(
-                        "MOVE-BY-MOVE REVIEW",
-                        color = Muted,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-                items(gameReview.moves) { moveReview ->
-                    Card(
-                        colors = CardDefaults.cardColors(containerColor = Panel),
-                        modifier = Modifier.fillMaxWidth().clickable {
-                            session = session.jumpTo(moveReview.ply)
-                        }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(12.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column {
-                                Text("${moveReview.move} ${moveReview.playedMove}", fontWeight = FontWeight.SemiBold)
-                                Text(
-                                    "Best: ${moveReview.bestMove}  ·  loss ${moveReview.centipawnLoss} cp",
-                                    color = Muted,
-                                    fontSize = 12.sp
-                                )
-                                Text(
-                                    "After: ${evaluationSummary(moveReview.evaluationAfterWhite)}",
-                                    color = Ink,
-                                    fontSize = 12.sp
-                                )
-                            }
-                            Text(moveReview.label.title, color = labelColor(moveReview.label), fontWeight = FontWeight.Bold)
+                        Text(
+                            "WHITE MOVES",
+                            modifier = Modifier.weight(1f),
+                            color = Muted,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            "BLACK MOVES",
+                            modifier = Modifier.weight(1f),
+                            color = Muted,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+                val whiteMoves = gameReview.moves.filter { it.mover == Side.WHITE }
+                val blackMoves = gameReview.moves.filter { it.mover == Side.BLACK }
+                val moveRows = List(maxOf(whiteMoves.size, blackMoves.size)) { index ->
+                    whiteMoves.getOrNull(index) to blackMoves.getOrNull(index)
+                }
+                items(moveRows) { (whiteMove, blackMove) ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        MoveReviewCard(
+                            moveReview = whiteMove,
+                            displayMove = whiteMove?.let { sanMoves.getOrNull(it.ply - 1) } ?: whiteMove?.playedMove.orEmpty(),
+                            modifier = Modifier.weight(1f)
+                        ) { selectedMove ->
+                            session = session.jumpTo(selectedMove.ply)
+                            selectedOrigin = null
+                        }
+                        MoveReviewCard(
+                            moveReview = blackMove,
+                            displayMove = blackMove?.let { sanMoves.getOrNull(it.ply - 1) } ?: blackMove?.playedMove.orEmpty(),
+                            modifier = Modifier.weight(1f)
+                        ) { selectedMove ->
+                            session = session.jumpTo(selectedMove.ply)
+                            selectedOrigin = null
                         }
                     }
                 }
             }
             item { Spacer(Modifier.height(20.dp)) }
+            }
+
+            promotionMoves.takeIf { it.isNotEmpty() }?.let { candidates ->
+                AlertDialog(
+                    onDismissRequest = { promotionMoves = emptyList() },
+                    title = { Text("Choose promotion") },
+                    text = {
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            candidates.forEach { move ->
+                                TextButton(
+                                    onClick = {
+                                        promotionMoves = emptyList()
+                                        try {
+                                            playMove(move)?.let { variation ->
+                                                scope.launch { analyzeGame(variation) }
+                                            }
+                                        } catch (exception: Exception) {
+                                            errorMessage = exception.message
+                                        }
+                                    }
+                                ) {
+                                    Text(promotionName(move))
+                                }
+                            }
+                        }
+                    },
+                    confirmButton = {},
+                    dismissButton = {
+                        TextButton(onClick = { promotionMoves = emptyList() }) {
+                            Text("Cancel")
+                        }
+                    }
+                )
             }
 
             Row(
@@ -632,25 +831,32 @@ private fun ChessInsightApp() {
             ) {
                 OutlinedButton(
                     modifier = Modifier.weight(1f),
-                    enabled = !engineBusy && analysisProgress == null,
+                    enabled = session.ply > 0 && !engineBusy && analysisProgress == null,
                     onClick = { session = session.jumpTo(0); selectedOrigin = null }
-                ) { Text("First", maxLines = 1) }
+                ) { Text("Start", maxLines = 1, fontSize = 12.sp) }
                 OutlinedButton(
                     modifier = Modifier.weight(1f),
-                    enabled = !engineBusy && analysisProgress == null,
+                    enabled = session.ply > 0 && !engineBusy && analysisProgress == null,
                     onClick = { session = session.jumpTo(session.ply - 1); selectedOrigin = null }
-                ) { Text("‹ Back", maxLines = 1) }
+                ) { Text("‹ Back", maxLines = 1, fontSize = 12.sp) }
                 OutlinedButton(
                     modifier = Modifier.weight(1f),
-                    enabled = !engineBusy && analysisProgress == null,
+                    enabled = session.ply < session.moves.size && !engineBusy && analysisProgress == null,
                     onClick = { session = session.jumpTo(session.ply + 1); selectedOrigin = null }
-                ) { Text("Next ›", maxLines = 1) }
+                ) { Text("Next ›", maxLines = 1, fontSize = 12.sp) }
                 OutlinedButton(
                     modifier = Modifier.weight(1f),
-                    enabled = !engineBusy && analysisProgress == null,
+                    enabled = session.ply < session.moves.size && !engineBusy && analysisProgress == null,
                     onClick = { session = session.jumpTo(session.moves.size); selectedOrigin = null }
-                ) { Text("Last", maxLines = 1) }
+                ) { Text("End", maxLines = 1, fontSize = 12.sp) }
             }
+            Text(
+                "Position ${session.ply} of ${session.moves.size} moves",
+                modifier = Modifier.fillMaxWidth(),
+                color = Muted,
+                fontSize = 11.sp,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+            )
         }
     }
 }
@@ -662,10 +868,11 @@ private fun EvaluationBar(scoreWhiteCp: Int?, mateWhiteIn: Int?) {
     val whiteShare = ((scoreWhiteCp ?: 0) / 800f + 0.5f).coerceIn(0.04f, 0.96f)
     val evaluationText = when {
         scoreWhiteCp == null -> "Analyze position to see who is better"
+        mateWhiteIn == 0 -> if (whiteAdvantage) "White wins by checkmate" else "Black wins by checkmate"
         mateWhiteIn != null -> "${if (whiteAdvantage) "White" else "Black"} mates in ${kotlin.math.abs(mateWhiteIn)}"
         scoreWhiteCp == 0 -> "Equal · 0.00"
         else -> "${if (whiteAdvantage) "White" else "Black"} is better · " +
-            "+${"%.2f".format(kotlin.math.abs(scoreWhiteCp) / 100.0)}"
+            "+${formatPawns(kotlin.math.abs(scoreWhiteCp))}"
     }
 
     Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
@@ -701,6 +908,8 @@ private fun BoardView(
     boardSide: Side,
     selectedOrigin: String?,
     legalTargets: Set<String>,
+    captureTargets: Set<String>,
+    lastMoveSquares: Set<String>,
     reviewMove: MoveReview?,
     enabled: Boolean,
     onSquareTap: (String) -> Unit
@@ -765,6 +974,7 @@ private fun BoardView(
                         val light = (file.code - 'a'.code + rank) % 2 == 0
                         val squareColor = when {
                             square == selectedOrigin -> Color(0xFFF2CE78)
+                            square in lastMoveSquares -> Color(0xFFD8B957)
                             light -> Color(0xFFF1E8D8)
                             else -> Color(0xFF788CA8)
                         }
@@ -773,10 +983,23 @@ private fun BoardView(
                                 .weight(1f)
                                 .fillMaxSize()
                                 .background(squareColor)
+                                .semantics {
+                                    val pieceName = if (piece == Piece.NONE) {
+                                        "empty"
+                                    } else {
+                                        piece.name.substringAfter('_').lowercase()
+                                    }
+                                    val destination = when {
+                                        square in captureTargets -> ", legal capture"
+                                        square in legalTargets -> ", legal move"
+                                        else -> ""
+                                    }
+                                    contentDescription = "$square, $pieceName$destination"
+                                }
                                 .clickable(enabled = enabled) { onSquareTap(square) },
                             contentAlignment = Alignment.Center
                         ) {
-                            if (square in legalTargets && piece == Piece.NONE) {
+                            if (square in legalTargets && square !in captureTargets && piece == Piece.NONE) {
                                 Box(
                                     Modifier.size(12.dp).background(Color(0x887A876E), CircleShape)
                                 )
@@ -787,6 +1010,15 @@ private fun BoardView(
                             ) {
                                 Canvas(modifier = Modifier.fillMaxSize().padding(4.dp)) {
                                     drawChessPiece(piece)
+                                }
+                            }
+                            if (square in captureTargets) {
+                                Canvas(modifier = Modifier.fillMaxSize().padding(5.dp)) {
+                                    drawCircle(
+                                        color = Color(0xCCB54238),
+                                        radius = size.minDimension * 0.43f,
+                                        style = Stroke(width = 3.dp.toPx())
+                                    )
                                 }
                             }
                         }
@@ -908,8 +1140,70 @@ private fun BoardView(
 
 private fun evaluationSummary(scoreWhiteCp: Int): String = when {
     scoreWhiteCp in -10..10 -> "Equal · 0.00"
-    scoreWhiteCp > 0 -> "White better · +${"%.2f".format(scoreWhiteCp / 100.0)}"
-    else -> "Black better · +${"%.2f".format(kotlin.math.abs(scoreWhiteCp) / 100.0)}"
+    scoreWhiteCp > 0 -> "White better · +${formatPawns(scoreWhiteCp)}"
+    else -> "Black better · +${formatPawns(kotlin.math.abs(scoreWhiteCp))}"
+}
+
+private fun formatPawns(centipawns: Int): String =
+    String.format(Locale.ROOT, "%.2f", centipawns / 100.0)
+
+private fun promotionName(move: String): String = when (move.lastOrNull()?.lowercaseChar()) {
+    'q' -> "Queen"
+    'r' -> "Rook"
+    'b' -> "Bishop"
+    'n' -> "Knight"
+    else -> "Promote"
+}
+
+private fun contentDisplayName(context: android.content.Context, uri: Uri): String? {
+    val cursor = context.contentResolver.query(
+        uri,
+        arrayOf(OpenableColumns.DISPLAY_NAME),
+        null,
+        null,
+        null
+    ) ?: return null
+    return cursor.use {
+        val nameColumn = it.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+        if (nameColumn < 0 || !it.moveToFirst()) null else it.getString(nameColumn)
+    }
+}
+
+@Composable
+private fun MoveReviewCard(
+    moveReview: MoveReview?,
+    displayMove: String,
+    modifier: Modifier = Modifier,
+    onClick: (MoveReview) -> Unit
+) {
+    if (moveReview == null) {
+        Spacer(modifier)
+        return
+    }
+
+    Card(
+        colors = CardDefaults.cardColors(containerColor = Panel),
+        modifier = modifier.fillMaxWidth().clickable { onClick(moveReview) }
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(8.dp),
+            verticalArrangement = Arrangement.spacedBy(3.dp)
+        ) {
+            Text(
+                "${moveReview.move} $displayMove",
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 12.sp
+            )
+            Text(
+                moveReview.label.title,
+                color = labelColor(moveReview.label),
+                fontWeight = FontWeight.Bold,
+                fontSize = 11.sp
+            )
+            Text("Best ${moveReview.bestMove} · ${moveReview.centipawnLoss} cp loss", color = Muted, fontSize = 10.sp)
+            Text(evaluationSummary(moveReview.evaluationAfterWhite), color = Ink, fontSize = 10.sp)
+        }
+    }
 }
 
 @Composable
@@ -919,21 +1213,24 @@ private fun ReviewSummary(review: GameReview, whiteName: String, blackName: Stri
             modifier = Modifier.fillMaxWidth().padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Text("ESTIMATED PERFORMANCE", color = Accent, fontWeight = FontWeight.Bold)
-            val whiteMoveCount = review.moves.count { it.ply % 2 == 1 }
-            val blackMoveCount = review.moves.count { it.ply % 2 == 0 }
-            fun ratingLabel(estimate: Int?, moveCount: Int): String =
-                estimate?.let { "$it Elo" }
-                    ?: "Need ${EloEstimator.MIN_MOVES - moveCount} more moves"
-
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text(
-                    "$whiteName\n${ratingLabel(review.whiteEstimatedElo, whiteMoveCount)}",
-                    fontWeight = FontWeight.SemiBold
+            Text("PLAYER PERFORMANCE & MOVE QUALITY", color = Accent, fontWeight = FontWeight.Bold)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                PlayerMoveSummaryColumn(
+                    modifier = Modifier.weight(1f),
+                    side = Side.WHITE,
+                    name = whiteName,
+                    estimate = review.whiteEstimatedElo,
+                    summary = review.summaryFor(Side.WHITE)
                 )
-                Text(
-                    "$blackName\n${ratingLabel(review.blackEstimatedElo, blackMoveCount)}",
-                    fontWeight = FontWeight.SemiBold
+                PlayerMoveSummaryColumn(
+                    modifier = Modifier.weight(1f),
+                    side = Side.BLACK,
+                    name = blackName,
+                    estimate = review.blackEstimatedElo,
+                    summary = review.summaryFor(Side.BLACK)
                 )
             }
             Text(
@@ -943,6 +1240,31 @@ private fun ReviewSummary(review: GameReview, whiteName: String, blackName: Stri
                 fontSize = 12.sp
             )
         }
+    }
+}
+
+@Composable
+private fun PlayerMoveSummaryColumn(
+    modifier: Modifier,
+    side: Side,
+    name: String,
+    estimate: Int?,
+    summary: PlayerMoveSummary
+) {
+    val player = if (side == Side.WHITE) "WHITE" else "BLACK"
+    val rating = estimate?.let { "$it Elo" }
+        ?: "Need ${(EloEstimator.MIN_MOVES - summary.moveCount).coerceAtLeast(0)} more moves"
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(3.dp)) {
+        Text(
+            "$player · $name",
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        Text(rating, color = Muted, fontSize = 12.sp)
+        Text("Moves ${summary.moveCount} · Best ${summary.bestMoves}", color = Ink, fontSize = 11.sp)
+        Text("Excellent ${summary.excellentMoves} · Brilliant ${summary.brilliantMoves}", color = Ink, fontSize = 11.sp)
+        Text("Blunders ${summary.blunders}", color = labelColor(MoveLabel.BLUNDER), fontSize = 11.sp)
     }
 }
 
