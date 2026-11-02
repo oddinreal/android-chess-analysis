@@ -77,8 +77,12 @@ class GameAnalyzer(private val engine: StockfishEngine) {
         return GameReview(
             moves = reviews,
             evaluationsWhite = evaluationsWhite,
-            whiteEstimatedElo = estimatedElo(reviews.filter { it.ply % 2 == 1 }),
-            blackEstimatedElo = estimatedElo(reviews.filter { it.ply % 2 == 0 }),
+            whiteEstimatedElo = EloEstimator.estimate(
+                reviews.filter { it.ply % 2 == 1 }.map(MoveReview::centipawnLoss)
+            ),
+            blackEstimatedElo = EloEstimator.estimate(
+                reviews.filter { it.ply % 2 == 0 }.map(MoveReview::centipawnLoss)
+            ),
             depth = depth
         )
     }
@@ -96,14 +100,6 @@ class GameAnalyzer(private val engine: StockfishEngine) {
             loss <= 250 -> MoveLabel.MISTAKE
             else -> MoveLabel.BLUNDER
         }
-
-    private fun estimatedElo(moves: List<MoveReview>): Int? {
-        if (moves.isEmpty()) return null
-        val averageLoss = moves.map { it.centipawnLoss }.average()
-        return (2700.0 - 520.0 * kotlin.math.ln1p(averageLoss / 25.0))
-            .toInt()
-            .coerceIn(600, 2800)
-    }
 
     private enum class BoardSide { WHITE, BLACK }
 }

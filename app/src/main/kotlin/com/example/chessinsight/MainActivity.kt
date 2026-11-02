@@ -6,6 +6,9 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.Canvas
@@ -23,10 +26,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -59,6 +64,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -80,6 +86,14 @@ private data class PositionEvaluation(
     val fen: String,
     val scoreWhiteCp: Int,
     val mateWhiteIn: Int?
+)
+
+private data class BoardMoveAnimation(
+    val fromFile: Int,
+    val fromRank: Int,
+    val toFile: Int,
+    val toRank: Int,
+    val piece: Piece
 )
 
 class MainActivity : ComponentActivity() {
@@ -108,6 +122,7 @@ private fun ChessInsightApp() {
     val scope = rememberCoroutineScope()
     val engine = remember { StockfishEngine(context.applicationContext) }
     var session by remember { mutableStateOf(ChessSession()) }
+    var boardSide by remember { mutableStateOf(Side.WHITE) }
     var selectedOrigin by remember { mutableStateOf<String?>(null) }
     var review by remember { mutableStateOf<GameReview?>(null) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
@@ -117,7 +132,7 @@ private fun ChessInsightApp() {
     var analysisProgress by remember { mutableStateOf<Pair<Int, Int>?>(null) }
     var notationEntry by remember { mutableStateOf("") }
     var positionEvaluation by remember { mutableStateOf<PositionEvaluation?>(null) }
-    var analysisDepth by remember { mutableStateOf(20) }
+    var analysisDepth by remember { mutableStateOf(12) }
     var showNotationInput by remember { mutableStateOf(false) }
     var autoAnalyzeImportedGames by remember { mutableStateOf(true) }
 
@@ -302,8 +317,25 @@ private fun ChessInsightApp() {
             }
 
             item {
+                OutlinedButton(
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = {
+                        boardSide = if (boardSide == Side.WHITE) Side.BLACK else Side.WHITE
+                        selectedOrigin = null
+                    }
+                ) {
+                    Text(
+                        "Flip board · playing as ${
+                            if (boardSide == Side.WHITE) "White" else "Black"
+                        }"
+                    )
+                }
+            }
+
+            item {
                 BoardView(
                     session = session,
+                    boardSide = boardSide,
                     selectedOrigin = selectedOrigin,
                     legalTargets = legalTargets,
                     reviewMove = selectedReviewMove,
@@ -666,6 +698,7 @@ private fun EvaluationBar(scoreWhiteCp: Int?, mateWhiteIn: Int?) {
 @Composable
 private fun BoardView(
     session: ChessSession,
+    boardSide: Side,
     selectedOrigin: String?,
     legalTargets: Set<String>,
     reviewMove: MoveReview?,
@@ -673,17 +706,60 @@ private fun BoardView(
     onSquareTap: (String) -> Unit
 ) {
     val board = remember(session) { session.boardAt() }
-    Box(
+    var previousSession by remember { mutableStateOf(session) }
+    var movingPiece by remember { mutableStateOf<BoardMoveAnimation?>(null) }
+    val moveProgress = remember { Animatable(1f) }
+
+    LaunchedEffect(session) {
+        val previous = previousSession
+        previousSession = session
+        movingPiece = null
+        moveProgress.snapTo(1f)
+
+        val move = session.moves.getOrNull(previous.ply)
+        if (
+            session.startFen == previous.startFen &&
+            session.ply == previous.ply + 1 &&
+            session.moves.take(previous.ply) == previous.moves.take(previous.ply) &&
+            move != null && move.length >= 4
+        ) {
+            val fromFile = move[0] - 'a'
+            val fromRank = move[1] - '1'
+            val toFile = move[2] - 'a'
+            val toRank = move[3] - '1'
+            if (fromFile in 0..7 && fromRank in 0..7 && toFile in 0..7 && toRank in 0..7) {
+                val destination = move.substring(2, 4)
+                val piece = board.getPiece(Square.valueOf(destination.uppercase()))
+                if (piece != Piece.NONE) {
+                    movingPiece = BoardMoveAnimation(fromFile, fromRank, toFile, toRank, piece)
+                    moveProgress.snapTo(0f)
+                    moveProgress.animateTo(
+                        1f,
+                        animationSpec = tween(durationMillis = 340, easing = FastOutSlowInEasing)
+                    )
+                    movingPiece = null
+                }
+            }
+        }
+    }
+
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxWidth()
             .aspectRatio(1f)
             .clip(RoundedCornerShape(14.dp))
             .border(2.dp, Color(0xFFCBD3DF), RoundedCornerShape(14.dp))
     ) {
+        val cellSize = maxWidth / 8
+        val animation = movingPiece
+        val animationProgress = moveProgress.value
+
         Column(modifier = Modifier.fillMaxSize()) {
-            for (rank in 8 downTo 1) {
+            val ranks = if (boardSide == Side.WHITE) 8 downTo 1 else 1..8
+            val files = if (boardSide == Side.WHITE) 'a'..'h' else 'h' downTo 'a'
+            for (rank in ranks) {
                 Row(modifier = Modifier.weight(1f)) {
-                    for (file in 'a'..'h') {
+                    for (file in files) {
                         val square = "$file$rank"
                         val piece = board.getPiece(Square.valueOf(square.uppercase()))
                         val light = (file.code - 'a'.code + rank) % 2 == 0
@@ -705,7 +781,10 @@ private fun BoardView(
                                     Modifier.size(12.dp).background(Color(0x887A876E), CircleShape)
                                 )
                             }
-                            if (piece != Piece.NONE) {
+                            if (
+                                piece != Piece.NONE &&
+                                !(animation != null && square == "${'a' + animation.toFile}${animation.toRank + 1}")
+                            ) {
                                 Canvas(modifier = Modifier.fillMaxSize().padding(4.dp)) {
                                     drawChessPiece(piece)
                                 }
@@ -713,6 +792,26 @@ private fun BoardView(
                         }
                     }
                 }
+            }
+        }
+
+        if (animation != null) {
+            val fromColumn = if (boardSide == Side.WHITE) animation.fromFile else 7 - animation.fromFile
+            val fromRow = if (boardSide == Side.WHITE) 7 - animation.fromRank else animation.fromRank
+            val toColumn = if (boardSide == Side.WHITE) animation.toFile else 7 - animation.toFile
+            val toRow = if (boardSide == Side.WHITE) 7 - animation.toRank else animation.toRank
+            Canvas(
+                modifier = Modifier
+                    .offset(
+                        x = cellSize * (
+                            toColumn + (fromColumn - toColumn) * (1f - animationProgress)
+                        ),
+                        y = cellSize * (toRow + (fromRow - toRow) * (1f - animationProgress))
+                    )
+                    .size(cellSize)
+                    .padding(4.dp)
+            ) {
+                drawChessPiece(animation.piece)
             }
         }
 
@@ -731,13 +830,17 @@ private fun BoardView(
                         return
                     }
 
+                    val viewFromFile = if (boardSide == Side.WHITE) fromFile else 7 - fromFile
+                    val viewFromRank = if (boardSide == Side.WHITE) 7 - fromRank else fromRank
+                    val viewToFile = if (boardSide == Side.WHITE) toFile else 7 - toFile
+                    val viewToRank = if (boardSide == Side.WHITE) 7 - toRank else toRank
                     val rawStart = Offset(
-                        (fromFile + 0.5f) * cellWidth,
-                        (7 - fromRank + 0.5f) * cellHeight
+                        (viewFromFile + 0.5f) * cellWidth,
+                        (viewFromRank + 0.5f) * cellHeight
                     )
                     val rawEnd = Offset(
-                        (toFile + 0.5f) * cellWidth,
-                        (7 - toRank + 0.5f) * cellHeight
+                        (viewToFile + 0.5f) * cellWidth,
+                        (viewToRank + 0.5f) * cellHeight
                     )
                     val dx = rawEnd.x - rawStart.x
                     val dy = rawEnd.y - rawStart.y
@@ -754,16 +857,23 @@ private fun BoardView(
                     val baseX = end.x - ux * headLength
                     val baseY = end.y - uy * headLength
                     val halfWidth = headLength * 0.62f
-                    val strokeWidth = 8.dp.toPx()
+                    val strokeWidth = 6.dp.toPx()
                     drawLine(
-                        color = Color(0xDD111914),
+                        color = Color(0x660D1725),
                         start = start,
                         end = Offset(baseX, baseY),
-                        strokeWidth = strokeWidth + 5.dp.toPx(),
+                        strokeWidth = strokeWidth + 7.dp.toPx(),
                         cap = StrokeCap.Round
                     )
                     drawLine(
-                        color = color,
+                        color = Color.White,
+                        start = start,
+                        end = Offset(baseX, baseY),
+                        strokeWidth = strokeWidth + 3.dp.toPx(),
+                        cap = StrokeCap.Round
+                    )
+                    drawLine(
+                        color = color.copy(alpha = 0.94f),
                         start = start,
                         end = Offset(baseX, baseY),
                         strokeWidth = strokeWidth,
@@ -775,16 +885,14 @@ private fun BoardView(
                         lineTo(baseX + uy * halfWidth, baseY - ux * halfWidth)
                         close()
                     }
-                    drawPath(arrowHead, Color(0xDD111914))
-                    val coloredHead = Path().apply {
-                        moveTo(end.x, end.y)
-                        lineTo(baseX - uy * halfWidth * 0.78f, baseY + ux * halfWidth * 0.78f)
-                        lineTo(baseX + uy * halfWidth * 0.78f, baseY - ux * halfWidth * 0.78f)
-                        close()
+                    val shadowOffset = 2.dp.toPx()
+                    withTransform({ translate(top = shadowOffset) }) {
+                        drawPath(arrowHead, Color(0x550D1725))
                     }
-                    drawPath(coloredHead, color)
-                    drawCircle(Color(0xDD111914), radius = strokeWidth * 0.9f, center = start)
-                    drawCircle(color, radius = strokeWidth * 0.58f, center = start)
+                    drawPath(arrowHead, Color.White, style = Stroke(width = 3.dp.toPx()))
+                    drawPath(arrowHead, color.copy(alpha = 0.96f))
+                    drawCircle(Color.White, radius = strokeWidth * 1.05f, center = start)
+                    drawCircle(color, radius = strokeWidth * 0.7f, center = start)
                 }
 
                 if (reviewMove.bestMove.equals(reviewMove.playedMove, ignoreCase = true)) {
@@ -812,19 +920,25 @@ private fun ReviewSummary(review: GameReview, whiteName: String, blackName: Stri
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Text("ESTIMATED PERFORMANCE", color = Accent, fontWeight = FontWeight.Bold)
+            val whiteMoveCount = review.moves.count { it.ply % 2 == 1 }
+            val blackMoveCount = review.moves.count { it.ply % 2 == 0 }
+            fun ratingLabel(estimate: Int?, moveCount: Int): String =
+                estimate?.let { "$it Elo" }
+                    ?: "Need ${EloEstimator.MIN_MOVES - moveCount} more moves"
+
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text(
-                    "$whiteName\n${review.whiteEstimatedElo?.let { "$it Elo" } ?: "No moves"}",
+                    "$whiteName\n${ratingLabel(review.whiteEstimatedElo, whiteMoveCount)}",
                     fontWeight = FontWeight.SemiBold
                 )
                 Text(
-                    "$blackName\n${review.blackEstimatedElo?.let { "$it Elo" } ?: "No moves"}",
+                    "$blackName\n${ratingLabel(review.blackEstimatedElo, blackMoveCount)}",
                     fontWeight = FontWeight.SemiBold
                 )
             }
             Text(
-                "Rough estimates from average centipawn loss, not official ratings. " +
-                    "Engine depth ${review.depth}; move labels are heuristic.",
+                "Very rough engine-based estimates, rounded to 50 points and adjusted toward 1500 " +
+                    "for short samples; not official ratings. Engine depth ${review.depth}.",
                 color = Muted,
                 fontSize = 12.sp
             )

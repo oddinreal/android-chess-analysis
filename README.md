@@ -16,11 +16,13 @@ This app is vibe-coded and experimental. It is provided “as is,” without war
 - Play Stockfish's next move from the current position.
 - Analyze imported PGN games automatically with Stockfish 19 and show move-quality labels, played/best-move arrows, the evaluation after each move, and rough Elo estimates.
 - Toggle automatic analysis on import or manually analyze/reanalyze a game at any time.
-- Choose game-analysis depth from 12, 16, 20, or 25.
+- Choose game-analysis depth from 12, 16, 20, or 25; the default is 12.
+- Flip the board to view the position from White's or Black's perspective.
+- Animate played moves and view clearer, outlined analysis arrows.
 - View high-contrast chess pieces and, after game analysis, the move label and side-to-move advantage directly on the board.
 - Import PNG images to OCR visible PGN/FEN notation. Board-only images are not yet converted into positions.
 
-Move labels use a simple centipawn-loss heuristic; “Brilliant” is a best-move/evaluation-swing heuristic, not Chess.com's classifier. Estimated Elo is a rough performance estimate from average centipawn loss, not an official or reliable player rating.
+Move labels use a simple centipawn-loss heuristic; “Brilliant” is a best-move/evaluation-swing heuristic, not Chess.com's classifier. Estimated Elo is a very rough engine-based estimate, not an official or reliable player rating. It requires at least eight moves per player and is adjusted toward 1500 for shorter samples.
 
 ## Privacy
 
